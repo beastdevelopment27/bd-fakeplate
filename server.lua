@@ -13,10 +13,12 @@ local ActionCooldown = {}
 local ACTION_COOLDOWN_SEC = 2
 
 -- ---------------------------------------------------------------------------
--- Framework bootstrap
+-- Framework bootstrap (fallback when community_bridge is unavailable)
 -- ---------------------------------------------------------------------------
 
 local function InitFramework()
+    if BdBridge.IsEnabled() then return end
+
     if Config.Framework == 'qb' or (Config.Framework == 'auto' and GetResourceState('qb-core') == 'started') then
         Framework = 'qb'
         QBCore = exports['qb-core']:GetCoreObject()
@@ -27,6 +29,19 @@ local function InitFramework()
         Framework = 'esx'
         ESX = exports['es_extended']:getSharedObject()
     end
+end
+
+---@param src number
+---@param message string
+---@param notifyType string
+local function NotifyPlayer(src, message, notifyType)
+    local style = Config.Notifications[notifyType] or Config.Notifications.info
+    local NotifyMod = BdBridge.Notify()
+    if NotifyMod and NotifyMod.SendNotification then
+        NotifyMod.SendNotification(src, Config.Notifications.Title, message, style.type, style.duration)
+        return
+    end
+    TriggerClientEvent('bd-fakeplate:client:notify', src, message, notifyType)
 end
 
 CreateThread(function()
@@ -55,6 +70,12 @@ end
 ---@param src number
 ---@return string|nil
 local function GetPlayerJobName(src)
+    local BridgeFramework = BdBridge.Framework()
+    if BridgeFramework and BridgeFramework.GetPlayerJobData then
+        local job = BridgeFramework.GetPlayerJobData(src)
+        return job and job.jobName or nil
+    end
+
     local player = GetPlayer(src)
     if not player then return nil end
 
@@ -72,6 +93,11 @@ end
 ---@param src number
 ---@return string|nil
 local function GetInstallerId(src)
+    local BridgeFramework = BdBridge.Framework()
+    if BridgeFramework and BridgeFramework.GetPlayerIdentifier then
+        return BridgeFramework.GetPlayerIdentifier(src)
+    end
+
     local player = GetPlayer(src)
     if not player then return nil end
 
@@ -171,10 +197,12 @@ local function IsPlayerNearEntity(src, entity)
     return #(pCoords - eCoords) <= (Config.InteractDistance + 1.5)
 end
 
----@param entity number
+---@param src number
+---@param netId number
 ---@return boolean
-local function IsVehicleClassBlacklisted(entity)
-    local class = GetVehicleClass(entity)
+local function IsVehicleClassBlacklisted(src, netId)
+    local class = lib.callback.await('bd-fakeplate:client:getVehicleClass', src, netId)
+    if class == nil then return true end
     for i = 1, #Config.BlacklistedVehicleClasses do
         if Config.BlacklistedVehicleClasses[i] == class then
             return true
@@ -258,6 +286,65 @@ local function LoadPlateFromSQL(originalPlate)
     return result and result[1] or nil
 end
 
+---@param fakePlate string
+---@return table|nil row
+local function LoadPlateFromSQLByFake(fakePlate)
+    if not Config.SQL.Enabled or GetResourceState('oxmysql') ~= 'started' then return nil end
+    local result = exports.oxmysql:executeSync(
+        ('SELECT * FROM `%s` WHERE fake_plate = ? LIMIT 1'):format(Config.SQL.TableName),
+        { TrimPlate(fakePlate) }
+    )
+    return result and result[1] or nil
+end
+
+---@param entity number
+---@return boolean
+local function VehicleHasActiveFakePlate(entity)
+    local state = GetVehicleFakePlateState(entity)
+    return state ~= nil and state.active == true
+end
+
+---@param plate string
+---@return boolean
+local function PlateIsActiveFake(plate)
+    plate = TrimPlate(plate)
+    if plate == '' then return false end
+
+    for _, state in pairs(ActivePlates) do
+        if state.active and TrimPlate(state.fakePlate) == plate then
+            return true
+        end
+    end
+
+    return LoadPlateFromSQLByFake(plate) ~= nil
+end
+
+---@param identifier number|string netId or plate text
+---@param src number|nil player to notify
+---@return boolean canStore
+local function CanStoreInGarage(identifier, src)
+    if not Config.GarageIntegration.Enabled then return true end
+
+    local blocked = false
+    if type(identifier) == 'number' then
+        local entity = GetVehicleFromNetId(identifier)
+        blocked = entity ~= nil and VehicleHasActiveFakePlate(entity)
+    elseif type(identifier) == 'string' then
+        blocked = PlateIsActiveFake(identifier)
+    end
+
+    if blocked and src then
+        NotifyPlayer(src, Config.Locale.remove_before_garage, 'error')
+    end
+
+    return not blocked
+end
+
+lib.callback.register('bd-fakeplate:canStoreVehicle', function(source, netId)
+    if type(netId) ~= 'number' then return true end
+    return CanStoreInGarage(netId, source)
+end)
+
 -- ---------------------------------------------------------------------------
 -- Discord webhook
 -- ---------------------------------------------------------------------------
@@ -286,7 +373,7 @@ local function SendDiscordLog(title, description)
 end
 
 -- ---------------------------------------------------------------------------
--- Inventory helpers (ox_inventory)
+-- Inventory helpers (community_bridge or ox_inventory fallback)
 -- ---------------------------------------------------------------------------
 
 ---@param src number
@@ -295,8 +382,15 @@ end
 ---@return boolean
 local function HasItem(src, item, amount)
     amount = amount or 1
-    local count = exports.ox_inventory:Search(src, 'count', item)
-    return count and count >= amount
+    local Inventory = BdBridge.Inventory()
+    if Inventory and Inventory.HasItem then
+        return Inventory.HasItem(src, item, amount)
+    end
+    if GetResourceState('ox_inventory') == 'started' then
+        local count = exports.ox_inventory:Search(src, 'count', item)
+        return count and count >= amount
+    end
+    return false
 end
 
 ---@param src number
@@ -304,37 +398,15 @@ end
 ---@param amount number
 ---@return boolean
 local function RemoveItem(src, item, amount)
-    return exports.ox_inventory:RemoveItem(src, item, amount or 1)
-end
-
--- ---------------------------------------------------------------------------
--- Evidence & police alert
--- ---------------------------------------------------------------------------
-
----@param src number
----@param entity number
-local function TryLeaveEvidence(src, entity)
-    if math.random() > Config.EvidenceChance then return end
-
-    TriggerClientEvent('bd-fakeplate:client:notify', src, Config.Locale.evidence_left, 'info')
-
-    local mode = Config.Evidence.Mode
-    if mode == 'export' and Config.Evidence.ExportResource ~= '' and Config.Evidence.ExportFunction ~= '' then
-        if GetResourceState(Config.Evidence.ExportResource) == 'started' then
-            exports[Config.Evidence.ExportResource][Config.Evidence.ExportFunction](src, entity)
-        end
-    elseif mode == 'event' and Config.Evidence.Event ~= '' then
-        TriggerEvent(Config.Evidence.Event, src, NetworkGetNetworkIdFromEntity(entity))
+    amount = amount or 1
+    local Inventory = BdBridge.Inventory()
+    if Inventory and Inventory.RemoveItem then
+        return Inventory.RemoveItem(src, item, amount)
     end
-end
-
----@param src number
----@param entity number
-local function TryPoliceAlert(src, entity)
-    if math.random() > Config.PoliceAlertChance then return end
-    local coords = GetEntityCoords(entity)
-    TriggerClientEvent('bd-fakeplate:client:policeAlert', src, coords)
-    -- Broadcast to police jobs could be added here per framework
+    if GetResourceState('ox_inventory') == 'started' then
+        return exports.ox_inventory:RemoveItem(src, item, amount)
+    end
+    return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -361,7 +433,7 @@ local function InstallFakePlate(src, netId, customPlate)
         return
     end
 
-    if IsVehicleClassBlacklisted(entity) then
+    if IsVehicleClassBlacklisted(src, netId) then
         TriggerClientEvent('bd-fakeplate:client:installResult', src, false, Config.Locale.blacklisted_class)
         return
     end
@@ -428,9 +500,6 @@ local function InstallFakePlate(src, netId, customPlate)
     end
 
     SavePlateToSQL(originalPlate, fakePlate, metadata and metadata.installedBy or nil, metadata)
-
-    TryPoliceAlert(src, entity)
-    TryLeaveEvidence(src, entity)
 
     SendDiscordLog('Fake Plate Installed', ('**Player:** %s\n**Original:** %s\n**Fake:** %s'):format(src, originalPlate, fakePlate))
 
@@ -534,7 +603,7 @@ RegisterNetEvent('bd-fakeplate:server:checkPlate', function(netId)
 
     local job = GetPlayerJobName(src)
     if not HasAllowedJob(Config.AllowedJobsCheckPlate, job) then
-        TriggerClientEvent('bd-fakeplate:client:notify', src, Config.Locale.checkplate_denied, 'error') -- client handler
+        NotifyPlayer(src, Config.Locale.checkplate_denied, 'error')
         return
     end
 
@@ -587,6 +656,8 @@ exports('useScrewdriver', function(event, item, inventory, slot)
     if event ~= 'usingItem' then return end
     TriggerClientEvent('bd-fakeplate:client:beginRemove', inventory.id)
 end)
+
+exports('CanStoreInGarage', CanStoreInGarage)
 
 -- ---------------------------------------------------------------------------
 -- Restore SQL plates when vehicles spawn (optional persistence)

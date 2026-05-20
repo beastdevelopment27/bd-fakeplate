@@ -1,0 +1,30 @@
+--[[
+    In-game text / locale strings
+]]
+
+Config.Locale = {
+    no_vehicle = 'No vehicle nearby.',
+    not_in_vehicle_zone = 'Move closer to the vehicle.',
+    already_fake = 'This vehicle already has a fake plate installed.',
+    no_fake_plate = 'This vehicle does not have a fake plate.',
+    blacklisted_class = 'You cannot install a fake plate on this type of vehicle.',
+    job_denied = 'Your job cannot use this item.',
+    install_cancelled = 'Installation cancelled.',
+    remove_cancelled = 'Removal cancelled.',
+    install_success = 'Fake plate installed: %s',
+    remove_success = 'Original plate restored: %s',
+    plate_fell_off = 'The fake plate fell off due to vehicle damage.',
+    checkplate_header = 'Plate Inspection',
+    checkplate_original = 'Original Plate: %s',
+    checkplate_fake = 'Fake Plate: %s',
+    checkplate_status_active = 'Status: Fake plate ACTIVE',
+    checkplate_status_none = 'Status: No fake plate',
+    checkplate_denied = 'You are not authorized to inspect plates.',
+    invalid_plate = 'Invalid plate text.',
+    exploit = 'Action blocked.',
+    custom_plate_title = 'Custom Fake Plate',
+    custom_plate_label = 'Plate Text (max 8 characters)',
+    install_label = 'Installing fake plate...',
+    remove_label = 'Removing fake plate...',
+    remove_before_garage = 'Remove the fake plate with a screwdriver before storing this vehicle.',
+}

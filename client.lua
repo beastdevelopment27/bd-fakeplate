@@ -12,6 +12,8 @@ local PlayerData = {}
 -- ---------------------------------------------------------------------------
 
 local function InitFramework()
+    if BdBridge.IsEnabled() then return end
+
     if Config.Framework == 'qb' or (Config.Framework == 'auto' and GetResourceState('qb-core') == 'started') then
         Framework = 'qb'
         local QBCore = exports['qb-core']:GetCoreObject()
@@ -52,29 +54,13 @@ end
 -- Utility helpers
 -- ---------------------------------------------------------------------------
 
----@param data table
-local function Notify(data)
-    lib.notify({
-        title = 'Fake Plate',
-        description = data.description,
-        type = data.type or 'inform',
-        duration = data.duration or 5000,
-    })
-end
-
----@param message string
----@param notifyType string
-local function NotifyLocale(message, notifyType)
-    local style = Config.Notifications[notifyType] or Config.Notifications.info
-    Notify({
-        description = message,
-        type = style.type,
-        duration = style.duration,
-    })
-end
-
 ---@return string|nil
 local function GetPlayerJobName()
+    local BridgeFramework = BdBridge.Framework()
+    if BridgeFramework and BridgeFramework.GetPlayerJobData then
+        local job = BridgeFramework.GetPlayerJobData()
+        return job and job.jobName or nil
+    end
     if Framework == 'qb' and PlayerData.job then
         return PlayerData.job.name
     end
@@ -106,6 +92,15 @@ local function LoadAnimDict(dict)
         Wait(10)
     end
 end
+
+lib.callback.register('bd-fakeplate:client:getVehicleClass', function(netId)
+    if type(netId) ~= 'number' then return nil end
+    local vehicle = NetworkGetEntityFromNetworkId(netId)
+    if vehicle == 0 or not DoesEntityExist(vehicle) or not IsEntityAVehicle(vehicle) then
+        return nil
+    end
+    return GetVehicleClass(vehicle)
+end)
 
 ---@param vehicle number
 ---@return boolean
@@ -152,6 +147,34 @@ end
 local function GetFakePlateState(vehicle)
     if not vehicle or vehicle == 0 then return nil end
     return Entity(vehicle).state[Config.StateBagKey]
+end
+
+---@param vehicle number
+---@return boolean
+local function HasFakePlate(vehicle)
+    local state = GetFakePlateState(vehicle)
+    return state ~= nil and state.active == true
+end
+
+---@return number|nil vehicle
+local function GetGarageStoreVehicle()
+    local vehicle = cache.vehicle
+    if vehicle and vehicle ~= 0 then return vehicle end
+    return lib.getClosestVehicle(GetEntityCoords(cache.ped), 8.0, false)
+end
+
+---@param vehicle number|nil
+---@param notify boolean|nil
+---@return boolean canStore
+local function CanStoreInGarage(vehicle, notify)
+    if not Config.GarageIntegration.Enabled then return true end
+    vehicle = vehicle or GetGarageStoreVehicle()
+    if not vehicle or vehicle == 0 then return true end
+    if not HasFakePlate(vehicle) then return true end
+    if notify ~= false then
+        NotifyLocale(Config.Locale.remove_before_garage, 'error')
+    end
+    return false
 end
 
 --- Sync plate visuals from state bag data.
@@ -203,7 +226,7 @@ end)
 local function RunTimedAction(label, duration, anim)
     LoadAnimDict(anim.dict)
 
-    local success = lib.progressBar({
+    local options = {
         duration = duration,
         label = label,
         useWhileDead = false,
@@ -218,31 +241,20 @@ local function RunTimedAction(label, duration, anim)
             clip = anim.clip,
             flag = anim.flag or 49,
         },
-    })
+    }
+
+    local success
+    local ProgressBar = BdBridge.ProgressBar()
+    if ProgressBar and ProgressBar.Open then
+        success = ProgressBar.Open(options)
+    else
+        success = lib.progressBar(options)
+    end
 
     StopAnimTask(cache.ped, anim.dict, anim.clip, 1.0)
     RemoveAnimDict(anim.dict)
     return success
 end
-
--- ---------------------------------------------------------------------------
--- Police alert (client hook for dispatch scripts)
--- ---------------------------------------------------------------------------
-
-RegisterNetEvent('bd-fakeplate:client:policeAlert', function(coords)
-    NotifyLocale(Config.Locale.police_alert, 'info')
-
-    local mode = Config.PoliceAlert.Mode
-    if mode == 'export' and Config.PoliceAlert.ExportResource ~= '' and Config.PoliceAlert.ExportFunction ~= '' then
-        local res = Config.PoliceAlert.ExportResource
-        local fn = Config.PoliceAlert.ExportFunction
-        if GetResourceState(res) == 'started' then
-            exports[res][fn](coords)
-        end
-    elseif mode == 'event' and Config.PoliceAlert.Event ~= '' then
-        TriggerEvent(Config.PoliceAlert.Event, coords)
-    end
-end)
 
 -- ---------------------------------------------------------------------------
 -- Install flow
@@ -251,7 +263,7 @@ end)
 local function RequestCustomPlate()
     if not Config.UseCustomPlate then return nil end
 
-    local input = lib.inputDialog(Config.Locale.custom_plate_title, {
+    local fields = {
         {
             type = 'input',
             label = Config.Locale.custom_plate_label,
@@ -259,10 +271,20 @@ local function RequestCustomPlate()
             min = Config.PlateMinLength,
             max = Config.PlateMaxLength,
         },
-    })
+    }
 
-    if not input or not input[1] then return false end -- cancelled
-    local plate = TrimPlate(input[1])
+    local input
+    local InputMod = BdBridge.Input()
+    if InputMod and InputMod.Open then
+        input = InputMod.Open(Config.Locale.custom_plate_title, fields)
+    else
+        input = lib.inputDialog(Config.Locale.custom_plate_title, fields)
+    end
+
+    if not input then return false end
+    local plateText = input[1] or input[fields[1].label]
+    if not plateText then return false end
+    local plate = TrimPlate(tostring(plateText))
     if #plate < Config.PlateMinLength or #plate > Config.PlateMaxLength then
         NotifyLocale(Config.Locale.invalid_plate, 'error')
         return false
@@ -465,9 +487,119 @@ RegisterNetEvent('bd-fakeplate:client:showPlateCheck', function(data)
 end)
 
 -- ---------------------------------------------------------------------------
+-- Garage: automatic block (no per-garage event list required)
+-- ---------------------------------------------------------------------------
+
+RegisterNetEvent('bd-fakeplate:client:garageBlocked', function()
+    NotifyLocale(Config.Locale.remove_before_garage, 'error')
+end)
+
+---@param name string
+---@return boolean
+local function IsGarageStoreAction(name)
+    if type(name) ~= 'string' then return false end
+    name = name:lower()
+
+    if name:find('storevehicle', 1, true) or name:find('store_vehicle', 1, true)
+        or name:find('parkvehicle', 1, true) or name:find('park_vehicle', 1, true)
+        or name:find('savevehicle', 1, true) or name:find('save_vehicle', 1, true) then
+        return true
+    end
+
+    if not name:find('garage', 1, true) and not name:find('impound', 1, true) then
+        return false
+    end
+
+    return name:find('store', 1, true) ~= nil
+        or name:find('park', 1, true) ~= nil
+        or name:find('save', 1, true) ~= nil
+        or name:find('deposit', 1, true) ~= nil
+        or name:find('putaway', 1, true) ~= nil
+        or name:find('put_away', 1, true) ~= nil
+end
+
+local garageHooksInstalled = false
+
+local function BlockGarageVehicleProperties(vehicle)
+    if not vehicle or vehicle == 0 or not HasFakePlate(vehicle) then
+        return false
+    end
+    CanStoreInGarage(vehicle, true)
+    return true
+end
+
+local function SetupGarageIntegration()
+    if not Config.GarageIntegration.Enabled or garageHooksInstalled then return end
+    garageHooksInstalled = true
+
+    if GetResourceState('es_extended') == 'started' then
+        local ESX = exports['es_extended']:getSharedObject()
+        if ESX and ESX.Game and ESX.Game.GetVehicleProperties then
+            local getProps = ESX.Game.GetVehicleProperties
+            ESX.Game.GetVehicleProperties = function(vehicle)
+                if BlockGarageVehicleProperties(vehicle) then return nil end
+                return getProps(vehicle)
+            end
+        end
+        if ESX and ESX.TriggerServerCallback then
+            local triggerCb = ESX.TriggerServerCallback
+            ESX.TriggerServerCallback = function(name, cb, ...)
+                if IsGarageStoreAction(name) and not CanStoreInGarage(nil, true) then
+                    if cb then cb(false) end
+                    return
+                end
+                return triggerCb(name, cb, ...)
+            end
+        end
+    end
+
+    if GetResourceState('qb-core') == 'started' then
+        local QBCore = exports['qb-core']:GetCoreObject()
+        if QBCore and QBCore.Functions and QBCore.Functions.GetVehicleProperties then
+            local getProps = QBCore.Functions.GetVehicleProperties
+            QBCore.Functions.GetVehicleProperties = function(vehicle)
+                if BlockGarageVehicleProperties(vehicle) then return nil end
+                return getProps(vehicle)
+            end
+        end
+    end
+
+    if lib and lib.getVehicleProperties then
+        local getProps = lib.getVehicleProperties
+        lib.getVehicleProperties = function(vehicle, ...)
+            if BlockGarageVehicleProperties(vehicle) then return nil end
+            return getProps(vehicle, ...)
+        end
+    end
+
+    if lib and lib.callback and lib.callback.await then
+        local cbAwait = lib.callback.await
+        lib.callback.await = function(name, delay, ...)
+            if IsGarageStoreAction(name) and not CanStoreInGarage(nil, true) then
+                return false
+            end
+            return cbAwait(name, delay, ...)
+        end
+    end
+
+    local triggerServer = TriggerServerEvent
+    TriggerServerEvent = function(eventName, ...)
+        if IsGarageStoreAction(eventName) and not CanStoreInGarage(nil, true) then
+            return
+        end
+        return triggerServer(eventName, ...)
+    end
+end
+
+exports('CanStoreInGarage', CanStoreInGarage)
+exports('HasFakePlate', HasFakePlate)
+
+-- ---------------------------------------------------------------------------
 -- Bootstrap
 -- ---------------------------------------------------------------------------
 
 CreateThread(function()
     InitFramework()
+    Wait(500)
+    SetupGarageIntegration()
 end)
