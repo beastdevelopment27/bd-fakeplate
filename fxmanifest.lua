@@ -1,14 +1,8 @@
---[[
-    bd-fakeplate
-    Fake license plate system for ESX / QBCore
-    Dependencies: ox_lib, ox_inventory
-]]
-
 fx_version 'cerulean'
 game 'gta5'
 
 name 'bd-fakeplate'
-description 'Synced fake license plate system (community_bridge / ESX / QBCore)'
+description 'Synced fake license plate system (ESX / QBCore / ox_lib)'
 author 'Beast Development'
 version '1.0.0'
 
@@ -21,7 +15,11 @@ shared_scripts {
     'config/locale.lua',
     'config/gameplay.lua',
     'config/integrations.lua',
-    'shared/bridge.lua',
+    'shared/integrations/core.lua',
+    'shared/integrations/notify.lua',
+    'shared/integrations/inventory.lua',
+    'shared/integrations/progressbar.lua',
+    'shared/integrations/dialogue.lua',
 }
 
 client_scripts {
@@ -35,7 +33,4 @@ server_scripts {
 
 dependencies {
     'ox_lib',
-    'community_bridge',
 }
-
--- Optional: oxmysql (Config.SQL.Enabled), ox_inventory (fallback if bridge disabled)

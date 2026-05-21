@@ -1,9 +1,5 @@
---[[
-    Core gameplay tuning
-]]
-
 Config.ConsumeFakePlate = true
-Config.ConsumeScrewdriver = false
+Config.ConsumeScrewdriver = true
 
 Config.UseCustomPlate = true
 Config.PlateMinLength = 1
@@ -23,12 +19,11 @@ Config.CrashDetach = true
 Config.MinimumBodyHealth = 250.0
 Config.CrashCheckInterval = 2000
 
--- https://docs.fivem.net/natives/?_0x29439776AAA00A62
 Config.BlacklistedVehicleClasses = {
-    14, -- Boats
-    15, -- Helicopters
-    16, -- Planes
-    21, -- Trains
+    14,
+    15,
+    16,
+    21,
 }
 
 Config.WhitelistJobsInstall = {}
@@ -57,6 +52,14 @@ Config.Animations = {
 }
 
 Config.SaveMetadata = true
-
--- State bag key on vehicles (change only if you know what you are doing)
 Config.StateBagKey = 'bd_fakeplate'
+Config.GarageIntegration = {
+    Enabled = true,
+}
+
+Config.SQL = {
+    Enabled = true,
+    TableName = 'bd_fakeplates',
+    AutoCreateTable = true,
+}
+

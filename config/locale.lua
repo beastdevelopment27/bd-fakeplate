@@ -1,7 +1,3 @@
---[[
-    In-game text / locale strings
-]]
-
 Config.Locale = {
     no_vehicle = 'No vehicle nearby.',
     not_in_vehicle_zone = 'Move closer to the vehicle.',

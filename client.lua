@@ -1,19 +1,8 @@
---[[
-    bd-fakeplate | Client
-    Handles animations, progress UI, plate visuals, crash detach, and commands.
-]]
-
 local isBusy = false
 local Framework = nil
 local PlayerData = {}
 
--- ---------------------------------------------------------------------------
--- Framework bootstrap
--- ---------------------------------------------------------------------------
-
 local function InitFramework()
-    if BdBridge.IsEnabled() then return end
-
     if Config.Framework == 'qb' or (Config.Framework == 'auto' and GetResourceState('qb-core') == 'started') then
         Framework = 'qb'
         local QBCore = exports['qb-core']:GetCoreObject()
@@ -50,17 +39,7 @@ local function InitFramework()
     end
 end
 
--- ---------------------------------------------------------------------------
--- Utility helpers
--- ---------------------------------------------------------------------------
-
----@return string|nil
 local function GetPlayerJobName()
-    local BridgeFramework = BdBridge.Framework()
-    if BridgeFramework and BridgeFramework.GetPlayerJobData then
-        local job = BridgeFramework.GetPlayerJobData()
-        return job and job.jobName or nil
-    end
     if Framework == 'qb' and PlayerData.job then
         return PlayerData.job.name
     end
@@ -70,8 +49,6 @@ local function GetPlayerJobName()
     return nil
 end
 
----@param allowedJobs table
----@return boolean
 local function HasAllowedJob(allowedJobs)
     if not allowedJobs or #allowedJobs == 0 then return true end
     local job = GetPlayerJobName()
@@ -82,7 +59,6 @@ local function HasAllowedJob(allowedJobs)
     return false
 end
 
----@param dict string
 local function LoadAnimDict(dict)
     if HasAnimDictLoaded(dict) then return end
     RequestAnimDict(dict)
@@ -102,8 +78,6 @@ lib.callback.register('bd-fakeplate:client:getVehicleClass', function(netId)
     return GetVehicleClass(vehicle)
 end)
 
----@param vehicle number
----@return boolean
 local function IsVehicleClassBlacklisted(vehicle)
     if not vehicle or vehicle == 0 then return true end
     local class = GetVehicleClass(vehicle)
@@ -115,10 +89,6 @@ local function IsVehicleClassBlacklisted(vehicle)
     return false
 end
 
---- Get closest vehicle within interaction distance.
----@param coords vector3|nil
----@return number|nil vehicle
----@return number|nil netId
 local function GetNearestVehicle(coords)
     coords = coords or GetEntityCoords(cache.ped)
     local vehicle = lib.getClosestVehicle(coords, Config.InteractDistance, false)
@@ -127,59 +97,25 @@ local function GetNearestVehicle(coords)
     return vehicle, NetworkGetNetworkIdFromEntity(vehicle)
 end
 
----@param plate string
----@return string
 local function TrimPlate(plate)
     return (plate:gsub('^%s+', ''):gsub('%s+$', '')):upper()
 end
 
---- Apply visible plate text on a vehicle entity.
----@param vehicle number
----@param plate string
 local function ApplyPlateText(vehicle, plate)
     if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then return end
     SetVehicleNumberPlateText(vehicle, plate)
 end
 
---- Read fake plate state from entity state bag.
----@param vehicle number
----@return table|nil
 local function GetFakePlateState(vehicle)
     if not vehicle or vehicle == 0 then return nil end
     return Entity(vehicle).state[Config.StateBagKey]
 end
 
----@param vehicle number
----@return boolean
 local function HasFakePlate(vehicle)
     local state = GetFakePlateState(vehicle)
     return state ~= nil and state.active == true
 end
 
----@return number|nil vehicle
-local function GetGarageStoreVehicle()
-    local vehicle = cache.vehicle
-    if vehicle and vehicle ~= 0 then return vehicle end
-    return lib.getClosestVehicle(GetEntityCoords(cache.ped), 8.0, false)
-end
-
----@param vehicle number|nil
----@param notify boolean|nil
----@return boolean canStore
-local function CanStoreInGarage(vehicle, notify)
-    if not Config.GarageIntegration.Enabled then return true end
-    vehicle = vehicle or GetGarageStoreVehicle()
-    if not vehicle or vehicle == 0 then return true end
-    if not HasFakePlate(vehicle) then return true end
-    if notify ~= false then
-        NotifyLocale(Config.Locale.remove_before_garage, 'error')
-    end
-    return false
-end
-
---- Sync plate visuals from state bag data.
----@param vehicle number
----@param state table|nil
 local function SyncVehiclePlateFromState(vehicle, state)
     if not vehicle or vehicle == 0 then return end
     if state and state.active and state.fakePlate then
@@ -189,10 +125,6 @@ local function SyncVehiclePlateFromState(vehicle, state)
     end
 end
 
--- ---------------------------------------------------------------------------
--- State bag listener (global sync for all players)
--- ---------------------------------------------------------------------------
-
 AddStateBagChangeHandler(Config.StateBagKey, nil, function(bagName, _key, value)
     local entity = GetEntityFromStateBagName(bagName)
     if entity == 0 then return end
@@ -200,7 +132,6 @@ AddStateBagChangeHandler(Config.StateBagKey, nil, function(bagName, _key, value)
     SyncVehiclePlateFromState(entity, value)
 end)
 
--- Apply synced state when vehicles stream in (state bag may already be set)
 AddEventHandler('entityStreamIn', function(entity)
     if GetEntityType(entity) ~= 2 then return end
     local state = Entity(entity).state[Config.StateBagKey]
@@ -209,20 +140,11 @@ AddEventHandler('entityStreamIn', function(entity)
     end
 end)
 
--- Re-sync when entering a vehicle
 lib.onCache('vehicle', function(vehicle)
     if not vehicle then return end
     SyncVehiclePlateFromState(vehicle, GetFakePlateState(vehicle))
 end)
 
--- ---------------------------------------------------------------------------
--- Progress + animation flow
--- ---------------------------------------------------------------------------
-
----@param label string
----@param duration number
----@param anim table
----@return boolean success
 local function RunTimedAction(label, duration, anim)
     LoadAnimDict(anim.dict)
 
@@ -243,22 +165,12 @@ local function RunTimedAction(label, duration, anim)
         },
     }
 
-    local success
-    local ProgressBar = BdBridge.ProgressBar()
-    if ProgressBar and ProgressBar.Open then
-        success = ProgressBar.Open(options)
-    else
-        success = lib.progressBar(options)
-    end
+    local success = BdIntegrations.Progressbar.Start(options)
 
     StopAnimTask(cache.ped, anim.dict, anim.clip, 1.0)
     RemoveAnimDict(anim.dict)
     return success
 end
-
--- ---------------------------------------------------------------------------
--- Install flow
--- ---------------------------------------------------------------------------
 
 local function RequestCustomPlate()
     if not Config.UseCustomPlate then return nil end
@@ -273,13 +185,10 @@ local function RequestCustomPlate()
         },
     }
 
-    local input
-    local InputMod = BdBridge.Input()
-    if InputMod and InputMod.Open then
-        input = InputMod.Open(Config.Locale.custom_plate_title, fields)
-    else
-        input = lib.inputDialog(Config.Locale.custom_plate_title, fields)
-    end
+    local input = BdIntegrations.Dialogue.Input({
+        title = Config.Locale.custom_plate_title,
+        inputs = fields,
+    })
 
     if not input then return false end
     local plateText = input[1] or input[fields[1].label]
@@ -312,7 +221,7 @@ RegisterNetEvent('bd-fakeplate:client:beginInstall', function()
     end
 
     local customPlate = RequestCustomPlate()
-    if customPlate == false then return end -- validation failed or cancelled dialog
+    if customPlate == false then return end
 
     isBusy = true
 
@@ -328,7 +237,6 @@ RegisterNetEvent('bd-fakeplate:client:beginInstall', function()
         return
     end
 
-    -- Re-validate vehicle after progress bar
     vehicle, netId = GetNearestVehicle()
     if not vehicle or not netId then
         NotifyLocale(Config.Locale.no_vehicle, 'error')
@@ -347,10 +255,6 @@ RegisterNetEvent('bd-fakeplate:client:installResult', function(success, message,
         NotifyLocale(message or Config.Locale.exploit, 'error')
     end
 end)
-
--- ---------------------------------------------------------------------------
--- Remove flow
--- ---------------------------------------------------------------------------
 
 RegisterNetEvent('bd-fakeplate:client:beginRemove', function()
     if isBusy then return end
@@ -400,10 +304,6 @@ RegisterNetEvent('bd-fakeplate:client:removeResult', function(success, message, 
     end
 end)
 
--- ---------------------------------------------------------------------------
--- Crash detach monitor
--- ---------------------------------------------------------------------------
-
 if Config.CrashDetach then
     CreateThread(function()
         while true do
@@ -430,10 +330,6 @@ if Config.CrashDetach then
     end)
 end
 
-RegisterNetEvent('bd-fakeplate:client:notify', function(message, notifyType)
-    NotifyLocale(message, notifyType or 'info')
-end)
-
 RegisterNetEvent('bd-fakeplate:client:plateFellOff', function(originalPlate)
     NotifyLocale(Config.Locale.plate_fell_off, 'info')
     if originalPlate then
@@ -443,10 +339,6 @@ RegisterNetEvent('bd-fakeplate:client:plateFellOff', function(originalPlate)
         end
     end
 end)
-
--- ---------------------------------------------------------------------------
--- /checkplate command
--- ---------------------------------------------------------------------------
 
 if Config.EnableCommands then
     RegisterCommand(Config.CheckPlateCommand, function()
@@ -486,16 +378,10 @@ RegisterNetEvent('bd-fakeplate:client:showPlateCheck', function(data)
     })
 end)
 
--- ---------------------------------------------------------------------------
--- Garage: automatic block (no per-garage event list required)
--- ---------------------------------------------------------------------------
-
 RegisterNetEvent('bd-fakeplate:client:garageBlocked', function()
     NotifyLocale(Config.Locale.remove_before_garage, 'error')
 end)
 
----@param name string
----@return boolean
 local function IsGarageStoreAction(name)
     if type(name) ~= 'string' then return false end
     name = name:lower()
@@ -593,10 +479,6 @@ end
 
 exports('CanStoreInGarage', CanStoreInGarage)
 exports('HasFakePlate', HasFakePlate)
-
--- ---------------------------------------------------------------------------
--- Bootstrap
--- ---------------------------------------------------------------------------
 
 CreateThread(function()
     InitFramework()
