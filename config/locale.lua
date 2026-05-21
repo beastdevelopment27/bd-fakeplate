@@ -1,5 +1,6 @@
 Config.Locale = {
     no_vehicle = 'No vehicle nearby.',
+    not_in_vehicle = 'You must be inside a vehicle to use this command.',
     not_in_vehicle_zone = 'Move closer to the vehicle.',
     already_fake = 'This vehicle already has a fake plate installed.',
     no_fake_plate = 'This vehicle does not have a fake plate.',

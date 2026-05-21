@@ -97,6 +97,15 @@ local function GetNearestVehicle(coords)
     return vehicle, NetworkGetNetworkIdFromEntity(vehicle)
 end
 
+local function GetOccupiedVehicle()
+    local ped = cache.ped
+    if not IsPedInAnyVehicle(ped, false) then return nil, nil end
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    if not vehicle or vehicle == 0 then return nil, nil end
+    if IsVehicleClassBlacklisted(vehicle) then return nil, nil end
+    return vehicle, NetworkGetNetworkIdFromEntity(vehicle)
+end
+
 local function TrimPlate(plate)
     return (plate:gsub('^%s+', ''):gsub('%s+$', '')):upper()
 end
@@ -201,16 +210,17 @@ local function RequestCustomPlate()
     return plate
 end
 
-RegisterNetEvent('bd-fakeplate:client:beginInstall', function()
+local function RunInstallFlow(getVehicle, interactMode)
     if isBusy then return end
     if not HasAllowedJob(Config.WhitelistJobsInstall) then
         NotifyLocale(Config.Locale.job_denied, 'error')
         return
     end
 
-    local vehicle, netId = GetNearestVehicle()
+    local vehicle, netId = getVehicle()
     if not vehicle or not netId then
-        NotifyLocale(Config.Locale.no_vehicle, 'error')
+        local message = interactMode == 'command' and Config.Locale.not_in_vehicle or Config.Locale.no_vehicle
+        NotifyLocale(message, 'error')
         return
     end
 
@@ -237,15 +247,20 @@ RegisterNetEvent('bd-fakeplate:client:beginInstall', function()
         return
     end
 
-    vehicle, netId = GetNearestVehicle()
+    vehicle, netId = getVehicle()
     if not vehicle or not netId then
-        NotifyLocale(Config.Locale.no_vehicle, 'error')
+        local message = interactMode == 'command' and Config.Locale.not_in_vehicle or Config.Locale.no_vehicle
+        NotifyLocale(message, 'error')
         isBusy = false
         return
     end
 
-    TriggerServerEvent('bd-fakeplate:server:installFakePlate', netId, customPlate)
+    TriggerServerEvent('bd-fakeplate:server:installFakePlate', netId, customPlate, interactMode)
     isBusy = false
+end
+
+RegisterNetEvent('bd-fakeplate:client:beginInstall', function()
+    RunInstallFlow(GetNearestVehicle, 'item')
 end)
 
 RegisterNetEvent('bd-fakeplate:client:installResult', function(success, message, fakePlate)
@@ -256,12 +271,13 @@ RegisterNetEvent('bd-fakeplate:client:installResult', function(success, message,
     end
 end)
 
-RegisterNetEvent('bd-fakeplate:client:beginRemove', function()
+local function RunRemoveFlow(getVehicle, interactMode)
     if isBusy then return end
 
-    local vehicle, netId = GetNearestVehicle()
+    local vehicle, netId = getVehicle()
     if not vehicle or not netId then
-        NotifyLocale(Config.Locale.no_vehicle, 'error')
+        local message = interactMode == 'command' and Config.Locale.not_in_vehicle or Config.Locale.no_vehicle
+        NotifyLocale(message, 'error')
         return
     end
 
@@ -285,15 +301,20 @@ RegisterNetEvent('bd-fakeplate:client:beginRemove', function()
         return
     end
 
-    vehicle, netId = GetNearestVehicle()
+    vehicle, netId = getVehicle()
     if not vehicle or not netId then
-        NotifyLocale(Config.Locale.no_vehicle, 'error')
+        local message = interactMode == 'command' and Config.Locale.not_in_vehicle or Config.Locale.no_vehicle
+        NotifyLocale(message, 'error')
         isBusy = false
         return
     end
 
-    TriggerServerEvent('bd-fakeplate:server:removeFakePlate', netId)
+    TriggerServerEvent('bd-fakeplate:server:removeFakePlate', netId, interactMode)
     isBusy = false
+end
+
+RegisterNetEvent('bd-fakeplate:client:beginRemove', function()
+    RunRemoveFlow(GetNearestVehicle, 'item')
 end)
 
 RegisterNetEvent('bd-fakeplate:client:removeResult', function(success, message, originalPlate)
@@ -341,6 +362,14 @@ RegisterNetEvent('bd-fakeplate:client:plateFellOff', function(originalPlate)
 end)
 
 if Config.EnableCommands then
+    RegisterCommand(Config.InstallFakePlateCommand, function()
+        RunInstallFlow(GetOccupiedVehicle, 'command')
+    end, false)
+
+    RegisterCommand(Config.RemoveFakePlateCommand, function()
+        RunRemoveFlow(GetOccupiedVehicle, 'command')
+    end, false)
+
     RegisterCommand(Config.CheckPlateCommand, function()
         if not HasAllowedJob(Config.AllowedJobsCheckPlate) then
             NotifyLocale(Config.Locale.checkplate_denied, 'error')
@@ -356,6 +385,8 @@ if Config.EnableCommands then
         TriggerServerEvent('bd-fakeplate:server:checkPlate', netId)
     end, false)
 
+    TriggerEvent('chat:addSuggestion', '/' .. Config.InstallFakePlateCommand, 'Install a fake plate on the vehicle you are in (requires fakeplate item)')
+    TriggerEvent('chat:addSuggestion', '/' .. Config.RemoveFakePlateCommand, 'Remove the fake plate from the vehicle you are in (requires screwdriver)')
     TriggerEvent('chat:addSuggestion', '/' .. Config.CheckPlateCommand, 'Inspect vehicle plate records (LEO)')
 end
 

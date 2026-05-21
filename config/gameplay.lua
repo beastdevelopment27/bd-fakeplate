@@ -37,6 +37,8 @@ Config.AllowedJobsCheckPlate = {
 
 Config.EnableCommands = true
 Config.CheckPlateCommand = 'checkplate'
+Config.InstallFakePlateCommand = 'installfakeplate'
+Config.RemoveFakePlateCommand = 'removefakeplate'
 
 Config.Animations = {
     Install = {

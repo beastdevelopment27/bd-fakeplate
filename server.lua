@@ -4,6 +4,7 @@ local ESX, QBCore = nil, nil
 local ActivePlates = {}
 local CrashDetachCooldown = {}
 local ActionCooldown = {}
+local ItemUseSlots = {}
 local ACTION_COOLDOWN_SEC = 2
 
 local function InitFramework()
@@ -23,8 +24,27 @@ local function NotifyPlayer(src, message, notifyType)
     BdIntegrations.Notify.Server(src, message, notifyType)
 end
 
+local function RegisterUseableItems()
+    if Framework ~= 'qb' or not QBCore then return end
+
+    QBCore.Functions.CreateUseableItem(Config.Items.FakePlate, function(source, item)
+        local src = source
+        ItemUseSlots[src] = ItemUseSlots[src] or {}
+        ItemUseSlots[src].fakeplate = item and item.slot
+        TriggerClientEvent('bd-fakeplate:client:beginInstall', src)
+    end)
+
+    QBCore.Functions.CreateUseableItem(Config.Items.Screwdriver, function(source, item)
+        local src = source
+        ItemUseSlots[src] = ItemUseSlots[src] or {}
+        ItemUseSlots[src].screwdriver = item and item.slot
+        TriggerClientEvent('bd-fakeplate:client:beginRemove', src)
+    end)
+end
+
 CreateThread(function()
     InitFramework()
+    RegisterUseableItems()
     if Config.SQL.Enabled and Config.SQL.AutoCreateTable then
         CreateSQLTable()
     end
@@ -135,6 +155,19 @@ local function IsPlayerNearEntity(src, entity)
     local pCoords = GetEntityCoords(ped)
     local eCoords = GetEntityCoords(entity)
     return #(pCoords - eCoords) <= (Config.InteractDistance + 1.5)
+end
+
+local function IsPlayerInsideEntity(src, entity)
+    local ped = GetPlayerPed(src)
+    if not ped or ped == 0 or not entity or entity == 0 then return false end
+    return GetVehiclePedIsIn(ped, false) == entity
+end
+
+local function CanPlayerInteractWithVehicle(src, entity, interactMode)
+    if interactMode == 'command' then
+        return IsPlayerInsideEntity(src, entity)
+    end
+    return IsPlayerNearEntity(src, entity) or IsPlayerInsideEntity(src, entity)
 end
 
 local function IsVehicleClassBlacklisted(src, netId)
@@ -283,8 +316,6 @@ local function HasItem(src, item, amount)
     return BdIntegrations.Inventory.HasItem(src, item, amount)
 end
 
-local ItemUseSlots = {}
-
 local function RemoveItem(src, item, amount)
     local slots = ItemUseSlots[src]
     local slot
@@ -300,7 +331,7 @@ local function RemoveItem(src, item, amount)
     return BdIntegrations.Inventory.RemoveItem(src, item, amount, slot)
 end
 
-local function InstallFakePlate(src, netId, customPlate)
+local function InstallFakePlate(src, netId, customPlate, installMode)
     if IsOnCooldown(src) then
         TriggerClientEvent('bd-fakeplate:client:installResult', src, false, Config.Locale.exploit, nil)
         return
@@ -312,8 +343,9 @@ local function InstallFakePlate(src, netId, customPlate)
         return
     end
 
-    if not IsPlayerNearEntity(src, entity) then
-        TriggerClientEvent('bd-fakeplate:client:installResult', src, false, Config.Locale.not_in_vehicle_zone)
+    if not CanPlayerInteractWithVehicle(src, entity, installMode) then
+        local message = installMode == 'command' and Config.Locale.not_in_vehicle or Config.Locale.not_in_vehicle_zone
+        TriggerClientEvent('bd-fakeplate:client:installResult', src, false, message)
         return
     end
 
@@ -390,7 +422,7 @@ local function InstallFakePlate(src, netId, customPlate)
     TriggerClientEvent('bd-fakeplate:client:installResult', src, true, string.format(Config.Locale.install_success, fakePlate), fakePlate)
 end
 
-local function RemoveFakePlate(src, netId)
+local function RemoveFakePlate(src, netId, removeMode)
     if IsOnCooldown(src) then
         TriggerClientEvent('bd-fakeplate:client:removeResult', src, false, Config.Locale.exploit, nil)
         return
@@ -402,8 +434,9 @@ local function RemoveFakePlate(src, netId)
         return
     end
 
-    if not IsPlayerNearEntity(src, entity) then
-        TriggerClientEvent('bd-fakeplate:client:removeResult', src, false, Config.Locale.not_in_vehicle_zone)
+    if not CanPlayerInteractWithVehicle(src, entity, removeMode) then
+        local message = removeMode == 'command' and Config.Locale.not_in_vehicle or Config.Locale.not_in_vehicle_zone
+        TriggerClientEvent('bd-fakeplate:client:removeResult', src, false, message)
         return
     end
 
@@ -433,17 +466,19 @@ local function RemoveFakePlate(src, netId)
     TriggerClientEvent('bd-fakeplate:client:removeResult', src, true, string.format(Config.Locale.remove_success, originalPlate), originalPlate)
 end
 
-RegisterNetEvent('bd-fakeplate:server:installFakePlate', function(netId, customPlate)
+RegisterNetEvent('bd-fakeplate:server:installFakePlate', function(netId, customPlate, installMode)
     local src = source
     if type(netId) ~= 'number' then return end
     if customPlate ~= nil and type(customPlate) ~= 'string' then return end
-    InstallFakePlate(src, netId, customPlate)
+    if installMode ~= nil and installMode ~= 'command' and installMode ~= 'item' then return end
+    InstallFakePlate(src, netId, customPlate, installMode or 'item')
 end)
 
-RegisterNetEvent('bd-fakeplate:server:removeFakePlate', function(netId)
+RegisterNetEvent('bd-fakeplate:server:removeFakePlate', function(netId, removeMode)
     local src = source
     if type(netId) ~= 'number' then return end
-    RemoveFakePlate(src, netId)
+    if removeMode ~= nil and removeMode ~= 'command' and removeMode ~= 'item' then return end
+    RemoveFakePlate(src, netId, removeMode or 'item')
 end)
 
 RegisterNetEvent('bd-fakeplate:server:crashDetach', function(netId)
@@ -508,20 +543,31 @@ RegisterNetEvent('bd-fakeplate:server:checkPlate', function(netId)
     })
 end)
 
-exports('useFakePlate', function(event, item, inventory, slot)
-    if event ~= 'usingItem' then return end
-    local src = inventory.id
+local function BeginFakePlateUse(src, slot)
     ItemUseSlots[src] = ItemUseSlots[src] or {}
-    ItemUseSlots[src].fakeplate = slot or item.slot
+    ItemUseSlots[src].fakeplate = slot
     TriggerClientEvent('bd-fakeplate:client:beginInstall', src)
+end
+
+local function BeginScrewdriverUse(src, slot)
+    ItemUseSlots[src] = ItemUseSlots[src] or {}
+    ItemUseSlots[src].screwdriver = slot
+    TriggerClientEvent('bd-fakeplate:client:beginRemove', src)
+end
+
+-- ox_inventory: export in items.lua with server.export = 'bd-fakeplate.useFakePlate'
+exports('useFakePlate', function(event, item, inventory, slot)
+    if event == 'usingItem' and inventory then
+        BeginFakePlateUse(inventory.id, slot or (item and item.slot))
+        return
+    end
 end)
 
 exports('useScrewdriver', function(event, item, inventory, slot)
-    if event ~= 'usingItem' then return end
-    local src = inventory.id
-    ItemUseSlots[src] = ItemUseSlots[src] or {}
-    ItemUseSlots[src].screwdriver = slot or item.slot
-    TriggerClientEvent('bd-fakeplate:client:beginRemove', src)
+    if event == 'usingItem' and inventory then
+        BeginScrewdriverUse(inventory.id, slot or (item and item.slot))
+        return
+    end
 end)
 
 exports('CanStoreInGarage', CanStoreInGarage)
